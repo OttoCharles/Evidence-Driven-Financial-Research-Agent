@@ -21,7 +21,7 @@ The reviewed preview is the reference for layout, visual hierarchy, and interact
 | Area | Required behavior |
 |---|---|
 | **Language** | Let users switch interface labels between English and Simplified Chinese and remember their selection in the browser. Answer each question in its own language and retain the language of saved answers and source quotations. |
-| **Model settings** | Provide a bilingual settings dialog in the top bar for OpenRouter and OpenAI-compatible endpoints. Let users enter or replace a masked API key and configure the model. Apply changes for the current browser session and let users restore the file and environment configuration. |
+| **Connection settings** | Provide bilingual model and data source settings in the top bar. Accept the OpenRouter or OpenAI-compatible model settings, SEC project name and contact email, and masked FRED and Tavily keys. Show which sources have been configured. Apply changes for the current browser session and let users restore the file and environment configuration for each section. |
 | **Question area** | A full-width question area sits above the workspace. It contains the question field, **Run investigation**, example prompts, and an applicable follow-up suggestion. |
 | **Research sessions** | A left sidebar starts below the question area, aligned with the **Investigation workflow** heading. It contains **New session**, saved sessions, and the active session's questions. Selecting a question reopens its saved report. On narrow screens, the sidebar becomes a collapsible **Sessions** control below the question area. |
 | **Investigation workflow** | A clickable strip shows **Parse → Plan → Retrieve → Verify → Report**. Selecting a step reveals its output. **Plan** shows which sources were chosen, what was requested, and which claim each lookup serves. When the verifier requests a follow-up, the strip visibly returns to **Plan**. Both planner passes remain inspectable. |
@@ -73,7 +73,7 @@ The core records are **Session**, **Turn**, **Parsed claim**, **Clarification re
 
 Use **`config.local.toml`** and environment variables for persistent provider settings. Ship a matching **`config.example.toml`** with blank credential fields. Read the file with `tomllib` and validate settings with Pydantic.
 
-The **Model settings** dialog overrides the selected model provider for the current browser session using server memory. New and resumed investigations use the configuration captured when submitted. Preserve data-provider settings from the file and environment. Reuse a saved credential only for the same provider and endpoint. Clearing the override restores the file and environment configuration.
+The **Connection settings** dialog stores model and data source overrides in server memory for the current browser session. New and resumed investigations use the configuration captured when submitted. Blank data source fields keep the effective settings. Reuse a saved model credential only for the same provider and endpoint. Restore the model and data source sections independently to their file and environment defaults.
 
 ```toml
 [model]
@@ -102,7 +102,7 @@ user_agent = ""
 
 - Use an OpenRouter-issued key for the OpenRouter service. Use the gateway's own key, base URL, and model ID for an OpenAI-compatible endpoint that supports Bearer authentication, Chat Completions, and strict JSON Schema output. A keyless loopback endpoint can omit the key.
 - FRED provides macro observations and Tavily provides news search. SEC EDGAR uses the project contact identifying string in `sec.user_agent`, for example `NLP Group Research <team-email>`.
-- Add `config.local.toml` and the local SQLite database to `.gitignore`. The example config contains placeholders. Keep submitted keys in server memory for the app session. Redact keys from logs, error messages, tool traces, report snapshots, and browser responses.
+- Add `config.local.toml` and the local SQLite database to `.gitignore`. The example config contains placeholders. Keep submitted credentials and SEC contact details in server memory for the app session. Redact them from logs, error messages, tool traces, report snapshots, and browser responses.
 - A missing key gives a clear setup message naming the affected provider. When a retrieval provider is unavailable, continue with relevant configured sources. Saved reports and fixture replay remain accessible. Document both configuration methods in the app README.
 
 ## 6. Evaluation and delivery

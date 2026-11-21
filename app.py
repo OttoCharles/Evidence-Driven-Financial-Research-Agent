@@ -5,6 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from financial_research.config import DataSourceOverrides
 from financial_research.domain import Clarification
 from financial_research.fixtures import EXAMPLES, PROMPTS, PROMPTS_ZH
 from financial_research.presentation import workspace_view
@@ -46,28 +47,43 @@ component = register_component(
 
 def active_settings():
     settings = service.settings
-    override = st.session_state.get("model_override")
-    return settings.with_model(override) if override is not None else settings
+    if (model := st.session_state.get("model_override")) is not None:
+        settings = settings.with_model(model)
+    if (sources := st.session_state.get("data_source_overrides")) is not None:
+        settings = settings.with_data_sources(sources)
+    return settings
 
 
 def submit(turn, answers=None, *, settings):
     return asyncio.run(service.execute(turn, answers, settings=settings))
 
 
+def settings_feedback(section, message, *, error=False):
+    feedback = {"error": error, "message": message}
+    st.session_state.model_settings_feedback = feedback if section == "model" else None
+    st.session_state.data_source_settings_feedback = feedback if section == "data" else None
+
+
 def handle(event, selection, selected, settings):
     command = event.get("command")
     if command == "save_model_settings":
         st.session_state.model_override = settings.model_from_form(event)
-        st.session_state.model_settings_feedback = {
-            "error": False,
-            "message": "Model settings applied for this session.",
-        }
+        settings_feedback("model", "Model settings applied for this session.")
     elif command == "reset_model_settings":
         st.session_state.pop("model_override", None)
-        st.session_state.model_settings_feedback = {
-            "error": False,
-            "message": "Restored settings from the configuration file and environment.",
-        }
+        settings_feedback("model", "Restored settings from the configuration file and environment.")
+    elif command == "save_data_source_settings":
+        defaults = DataSourceOverrides()
+        current = st.session_state.get("data_source_overrides", defaults)
+        updated = current.updated_from_form(event)
+        if updated != defaults:
+            st.session_state.data_source_overrides = updated
+        settings_feedback("data", "Data source settings applied for this session.")
+    elif command == "reset_data_source_settings":
+        st.session_state.pop("data_source_overrides", None)
+        settings_feedback(
+            "data", "Restored data source settings from the configuration file and environment."
+        )
     elif command == "mode" and event.get("mode") in {"replay", "live"}:
         st.session_state.mode = event["mode"]
     elif command == "new":
@@ -139,6 +155,11 @@ def research_workspace():
                 "overridden": "model_override" in st.session_state,
             },
             "modelSettingsFeedback": st.session_state.get("model_settings_feedback"),
+            "dataSourceSettings": {
+                **settings.data_source_settings_view(),
+                "overridden": "data_source_overrides" in st.session_state,
+            },
+            "dataSourceSettingsFeedback": st.session_state.get("data_source_settings_feedback"),
             "examples": [
                 {"label": label, "questions": {"en": PROMPTS[key], "zh": PROMPTS_ZH[key]}}
                 for label, key in EXAMPLES.items()
@@ -157,7 +178,9 @@ def research_workspace():
     except ValueError as exc:
         message = settings.redact(str(exc))
         if event.get("command") in ("save_model_settings", "reset_model_settings"):
-            st.session_state.model_settings_feedback = {"error": True, "message": message}
+            settings_feedback("model", message, error=True)
+        elif event.get("command") in ("save_data_source_settings", "reset_data_source_settings"):
+            settings_feedback("data", message, error=True)
         else:
             st.session_state.workspace_error = message
     st.rerun()

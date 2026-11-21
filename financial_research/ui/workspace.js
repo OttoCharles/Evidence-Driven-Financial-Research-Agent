@@ -4,6 +4,23 @@ const activityDisclosure = "run-activity";
 const questionsDisclosure = "session-questions";
 const defaultOpenDisclosures = [sourcesDisclosure, activityDisclosure, questionsDisclosure];
 const sourceNames = {sec: "SEC EDGAR", fred: "FRED", news: "News search"};
+const missingSourceSetup = {
+    "Set SEC_USER_AGENT or sec.user_agent in config.local.toml to your project name and contact email.": "SEC EDGAR",
+    "Set FRED_API_KEY or fred.api_key in config.local.toml to retrieve macro observations.": "FRED",
+    "Set TAVILY_API_KEY or tavily.api_key in config.local.toml to retrieve news coverage.": "Tavily",
+};
+const settingsSections = {
+    model: {
+        label: "Model settings", form: "model-settings-form", style: "model-settings",
+        settings: "modelSettings", feedback: "modelSettingsFeedback",
+        save: "save_model_settings", reset: "reset_model_settings",
+    },
+    data: {
+        label: "Data source settings", form: "data-source-settings-form", style: "data-source-settings",
+        settings: "dataSourceSettings", feedback: "dataSourceSettingsFeedback",
+        save: "save_data_source_settings", reset: "reset_data_source_settings",
+    },
+};
 const operationNames = {
     financials: "Consolidated financial facts", release: "Earnings release", filing: "Filing passages",
     observations: "Macro observations", articles: "Article text",
@@ -83,6 +100,13 @@ function link(url, label) {
     return href ? node("a", {href, target: "_blank", rel: "noopener noreferrer"}, label) : node("span", {}, label);
 }
 
+function dataSourceSetupButton(state, focusKey) {
+    return button(state.locale.text("Configure data sources"), "open_connection_settings", "data", {
+        class: "secondary data-source-setup", disabled: Boolean(state.pending), "aria-haspopup": "dialog",
+        "data-focus": focusKey,
+    });
+}
+
 function header(data, state) {
     const {code, text: t} = state.locale;
     const turn = data.selected;
@@ -95,10 +119,14 @@ function header(data, state) {
         title: t("Interface language"), "data-focus": "interface-language"},
         node("option", {value: "en", lang: "en", selected: code === "en"}, "English"),
         node("option", {value: "zh", lang: "zh-CN", selected: code === "zh"}, "简体中文"));
-    const settings = data.modelSettings && button(t("Model settings"), "open_model_settings", null, {
-        class: "model-settings-trigger", "aria-haspopup": "dialog", disabled: Boolean(state.pending),
+    const settings = button(t("Connection settings"), "open_connection_settings", "model", {
+        class: "connection-settings-trigger", "aria-haspopup": "dialog", disabled: Boolean(state.pending),
     });
-    const feedback = data.modelSettingsFeedback;
+    const feedback = Object.values(settingsSections).map(({feedback, style}) => {
+        const notice = data[feedback];
+        return notice && !notice.error && node("p", {class: "connection-feedback " + style + "-feedback", role: "status"},
+            localizeDiagnostic(notice.message, t));
+    });
     const form = node("form", {id: "research-form", class: "prompt-form"},
         node("label", {for: "research-question", class: "visually-hidden"}, t("Research question")),
         node("span", {class: "prompt-icon", "aria-hidden": "true"}),
@@ -112,8 +140,7 @@ function header(data, state) {
             node("div", {class: "brand"}, node("span", {class: "mark", "aria-hidden": "true"},
                 node("i"), node("i"), node("i")), t("Financial Research Agent")),
             node("div", {class: "mode-control"}, settings, language, mode)),
-        feedback && !feedback.error && node("p", {class: "model-settings-feedback", role: "status"},
-            localizeDiagnostic(feedback.message, t)),
+        feedback,
         node("div", {class: "hero"}, node("h1", {}, t("Investigate a financial claim")),
             node("p", {class: "intro"}, t("Check filings, compare figures, and see the evidence behind each answer.")),
             form, data.error && node("p", {class: "prompt-error", role: "alert"}, localizeDiagnostic(data.error, t)),
@@ -122,8 +149,9 @@ function header(data, state) {
             suggestion && node("div", {class: "follow-up"}, node("span", {}, t("Continue this report")),
                 button(suggestion, "fill", suggestion, {class: "example"})),
             data.mode === "live" && data.messages.length > 0 && disclosure(
-                state, "provider-setup", t("Provider setup"), node("ul", {},
+                state, "provider-setup", t("Provider setup"), [node("ul", {},
                     data.messages.map(message => node("li", {}, localizeDiagnostic(message, t)))),
+                    dataSourceSetupButton(state, "provider-setup-data-sources")],
                 "provider-setup", "setup-body"))));
 }
 
@@ -147,7 +175,7 @@ function modelProviderFields(t, settings, provider) {
             t("The endpoint and model must support Chat Completions with strict JSON schema responses."))),
         modelField(t("API key"), node("input", {
             id: "model-api-key", name: "api_key", type: "password", autocomplete: "off",
-            "aria-describedby": "model-key-help",
+            "aria-describedby": "model-key-help", "data-sensitive": true,
         }), node("p", {id: "model-key-help"}, [
             t(values.has_key ? "A key is configured for the saved endpoint." : "No key is configured for the saved endpoint."),
             t("Leave blank to keep the configured key for this provider and endpoint."),
@@ -161,47 +189,125 @@ function modelProviderFields(t, settings, provider) {
     ].filter(Boolean);
 }
 
-function modelSettingsDialog(data, state) {
-    const t = state.locale.text;
-    const settings = data.modelSettings;
+function modelSettingsFields(t, settings) {
     const provider = node("select", {
-        id: "model-provider", name: "provider", autofocus: true, "aria-describedby": "model-provider-help",
+        id: "model-provider", name: "provider", "aria-describedby": "model-provider-help",
     }, node("option", {value: "openrouter", selected: settings.provider === "openrouter"}, "OpenRouter"),
     node("option", {value: "openai_compatible", selected: settings.provider === "openai_compatible"}, t("OpenAI-compatible")));
     const fields = node("div", {class: "model-fields"}, modelProviderFields(t, settings, provider.value));
     provider.addEventListener("change", () => {
-        fields.querySelector("#model-api-key").value = "";
+        clearSensitiveInputs(fields);
         fields.replaceChildren(...modelProviderFields(t, settings, provider.value));
     });
-    const cancel = button(t("Cancel"), "close_model_settings", null, {class: "secondary"});
-    const dialog = node("dialog", {id: "model-settings-dialog", class: "model-settings-dialog",
-        "aria-labelledby": "model-settings-heading", "aria-describedby": "model-settings-scope"},
-        node("h2", {id: "model-settings-heading"}, t("Model settings")),
-        node("p", {id: "model-settings-scope"},
-            t("Changes apply to this app session. Restore defaults to use the file and environment settings.")),
-        node("p", {class: "model-settings-error", role: "alert", tabindex: -1, hidden: true}),
-        node("form", {id: "model-settings-form", method: "post", autocomplete: "off"}, node("fieldset", {},
-            modelField(t("Model provider"), provider, node("p", {id: "model-provider-help"},
-                t("Choose the provider that issued your API key."))),
-            fields, node("div", {class: "model-settings-actions"},
-                button(t("Restore defaults"), "reset_model_settings", null,
-                    {class: "secondary", disabled: !settings.overridden}),
-                cancel,
+    return [modelField(t("Model provider"), provider, node("p", {id: "model-provider-help"},
+        t("Choose the provider that issued your API key."))), fields];
+}
+
+function sourceSettingsGroup(t, name, title, description, configured, ...fields) {
+    return node("section", {class: "data-source-group", "data-provider": name, "aria-labelledby": name + "-settings-heading"},
+        node("div", {class: "data-source-heading"},
+            node("h3", {id: name + "-settings-heading"}, title),
+            node("span", {class: "data-source-status status" + (configured ? "" : " neutral")},
+                t(configured ? "Configured" : "Not configured"))),
+        node("p", {class: "data-source-description"}, t(description)), fields);
+}
+
+function dataSourceFields(t, settings) {
+    const {sec, fred, tavily} = settings.providers;
+    const securedInput = {autocomplete: "off", spellcheck: "false", "data-sensitive": true};
+    return [
+        node("p", {class: "data-source-description"}, t("Leave fields blank to keep existing values.")),
+        sourceSettingsGroup(t, "sec", "SEC EDGAR",
+            "Company filings and reported financials. SEC requires a project name and contact email. No API key is required.",
+            sec.configured, node("div", {class: "sec-contact-fields"},
+                modelField(t("Project name (English)"), node("input", {
+                    ...securedInput, id: "sec-project", name: "sec_project", type: "text",
+                })),
+                modelField(t("Contact email"), node("input", {
+                    ...securedInput, id: "sec-email", name: "sec_email", type: "text", inputmode: "email",
+                })))),
+        sourceSettingsGroup(t, "fred", "FRED", "Macro data such as interest rates and inflation.", fred.configured,
+            modelField(t("FRED API key"), node("input", {
+                ...securedInput, id: "fred-api-key", name: "fred_api_key", type: "password",
+            }))),
+        sourceSettingsGroup(t, "tavily", "Tavily", "News search for company events and context.", tavily.configured,
+            modelField(t("Tavily API key"), node("input", {
+                ...securedInput, id: "tavily-api-key", name: "tavily_api_key", type: "password",
+            }))),
+    ];
+}
+
+function connectionSettingsPanel(t, data, key) {
+    const section = settingsSections[key];
+    const settings = data[section.settings];
+    const fields = key === "model" ? modelSettingsFields(t, settings) : dataSourceFields(t, settings);
+    return node("div", {id: `connection-${key}-panel`, role: "tabpanel", "aria-labelledby": `connection-${key}-tab`},
+        node("p", {class: `connection-settings-error ${section.style}-error`, role: "alert", tabindex: -1, hidden: true}),
+        node("form", {id: section.form, method: "post", autocomplete: "off"}, node("fieldset", {},
+            fields, node("div", {class: "connection-settings-actions"},
+                button(t("Restore defaults"), section.reset, null,
+                    {class: "secondary connection-reset", disabled: !settings.overridden}),
+                button(t("Cancel"), "close_connection_settings", null, {class: "secondary"}),
                 node("button", {type: "submit", class: "primary"}, t("Save settings"))))));
+}
+
+function connectionSettingsDialog(data, state, initial) {
+    const t = state.locale.text;
+    const sections = Object.keys(settingsSections);
+    const panels = sections.map(key => connectionSettingsPanel(t, data, key));
+    const tabs = sections.map(key => node("button", {
+        id: `connection-${key}-tab`, type: "button", role: "tab", "aria-controls": `connection-${key}-panel`,
+    }, t(settingsSections[key].label)));
+    function select(index) {
+        tabs.forEach((tab, i) => {
+            const selected = i === index;
+            tab.setAttribute("aria-selected", String(selected));
+            tab.tabIndex = selected ? 0 : -1;
+            if (!selected && !panels[i].hidden) clearSensitiveInputs(panels[i]);
+            panels[i].hidden = !selected;
+        });
+    }
+    tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => select(index));
+        tab.addEventListener("keydown", event => {
+            const target = {
+                ArrowLeft: (index + tabs.length - 1) % tabs.length,
+                ArrowRight: (index + 1) % tabs.length,
+                Home: 0, End: tabs.length - 1,
+            }[event.key];
+            if (target === undefined || state.pending) return;
+            event.preventDefault();
+            select(target);
+            tabs[target].focus();
+        });
+    });
+    select(sections.indexOf(initial));
+    const dialog = node("dialog", {id: "connection-settings-dialog", class: "connection-settings-dialog",
+        "aria-labelledby": "connection-settings-heading", "aria-describedby": "connection-settings-scope"},
+        node("h2", {id: "connection-settings-heading"}, t("Connection settings")),
+        node("p", {id: "connection-settings-scope"},
+            t("Changes apply to new or resumed investigations in this app session. Restore defaults to use the file and environment settings.")),
+        node("div", {class: "connection-tabs", role: "tablist", "aria-label": t("Connection settings")}, tabs), panels);
     dialog.addEventListener("cancel", event => {
         event.preventDefault();
-        cancel.click();
+        dialog.querySelector('[role="tabpanel"]:not([hidden]) [data-action="close_connection_settings"]').click();
     });
     return dialog;
 }
 
-function closeModelSettings(root) {
-    const dialog = root.querySelector("#model-settings-dialog");
+function clearSensitiveInputs(container) {
+    for (const input of container.querySelectorAll("[data-sensitive]")) input.value = "";
+}
+
+function closeConnectionSettings(root, state) {
+    const dialog = root.querySelector("#connection-settings-dialog");
     if (!dialog) return;
-    dialog.querySelector("#model-api-key").value = "";
+    clearSensitiveInputs(dialog);
     dialog.close();
     dialog.remove();
-    root.querySelector('[data-action="open_model_settings"]')?.focus({preventScroll: true});
+    const opener = root.querySelector(`[data-focus="${CSS.escape(state.connectionOpener)}"]`)
+        || root.querySelector(".connection-settings-trigger");
+    opener?.focus({preventScroll: true});
 }
 
 function marketTexture() {
@@ -356,6 +462,14 @@ function actionLabel(t, item) {
         item.start && item.end ? t("{start} to {end}", {start: item.start, end: item.end}) : ""].filter(Boolean).join(" · ");
 }
 
+function lookupError(state, message, className, focusKey) {
+    const t = state.locale.text;
+    const provider = Object.hasOwn(missingSourceSetup, message) ? missingSourceSetup[message] : null;
+    if (!provider) return node("p", {class: className}, message);
+    return [node("p", {class: className}, t("{provider} was not configured when this lookup ran.", {provider})),
+        dataSourceSetupButton(state, focusKey)];
+}
+
 function planPanel(turn, state, event) {
     const {text: t, planDate, planList} = state.locale;
     const passes = turn.events.filter(item => item.stage === "Plan" && item.kind === "stage" && item.outcome === "complete");
@@ -386,7 +500,7 @@ function planPanel(turn, state, event) {
                 node("p", {class: "plan-source"}, t(sourceNames[item.source]),
                     result?.reused && " · " + t("Reused evidence from this session"),
                     lookup && !result?.error && (result.retrieval !== "cached" || !result.reused) && " · " + t(lookup)),
-                result?.error && node("p", {class: "plan-error"}, result.error),
+                result?.error && lookupError(state, result.error, "plan-error", `plan-source-settings-${index}`),
                 (claims.length > 0 || item.query) && disclosure(state, "plan-action-" + event.sequence + "-" + index,
                     t("Lookup details"), definitionList([
                         [t("Question checked"), claims.length > 0 && claims.join(" / ")],
@@ -709,10 +823,15 @@ function stagePanel(turn, state, stage, event, running) {
     }
     if (stage === "Retrieve") return [
         heading(t, "Investigation workflow", "Retrieved evidence"),
-        node("ul", {class: "plan-list"}, event.data.lookups.map(result => node("li", {},
-            node("p", {class: "request"}, t(sourceNames[result.action.source]) + " · " + actionLabel(t, result.action)),
-            result.reused && node("p", {class: "reuse-mark"}, t("Reused from this session")),
-            result.retrieval !== "cached" && node("p", {}, result.error || t("{count} evidence records", {count: result.records}))))),
+        node("ul", {class: "plan-list"}, event.data.lookups.map((result, index) => {
+            const summary = result.error
+                ? lookupError(state, result.error, "plan-error", `retrieval-source-settings-${index}`)
+                : node("p", {}, t("{count} evidence records", {count: result.records}));
+            return node("li", {},
+                node("p", {class: "request"}, t(sourceNames[result.action.source]) + " · " + actionLabel(t, result.action)),
+                result.reused && node("p", {class: "reuse-mark"}, t("Reused from this session")),
+                result.retrieval !== "cached" && summary);
+        })),
         block(t("Source records"), evidenceBlocks(turn, state, event.data.lookups.flatMap(item => item.evidence_ids), "retrieve")),
     ];
     if (stage === "Verify") return verificationPanel(turn, state, event);
@@ -848,10 +967,10 @@ function render(root, data, state) {
         state.content.append(dialog);
         dialog.showModal();
     }
-    const settings = root.querySelector("#model-settings-dialog");
+    const settings = root.querySelector("#connection-settings-dialog");
     if (settings) {
-        settings.querySelector("fieldset").disabled = Boolean(state.pending);
-        if (state.pending) settings.querySelector(".model-settings-error").hidden = true;
+        settings.querySelectorAll("fieldset, [role=tab]").forEach(control => { control.disabled = Boolean(state.pending); });
+        if (state.pending) settings.querySelectorAll(".connection-settings-error").forEach(alert => { alert.hidden = true; });
     }
     const clocks = [...root.querySelectorAll("[data-live-stage-clock]")];
     if (active && clocks.length) {
@@ -912,16 +1031,19 @@ export default function workspace({parentElement, data, setTriggerValue}) {
             state.answers = {};
         }
         render(root, data, state);
-        if (completed === "save_model_settings" || completed === "reset_model_settings") {
-            if (data.modelSettingsFeedback?.error) {
-                const alert = root.querySelector(".model-settings-error");
+        const connectionSection = Object.values(settingsSections).find(
+            section => completed === section.save || completed === section.reset);
+        if (connectionSection) {
+            const feedback = data[connectionSection.feedback];
+            if (feedback?.error) {
+                const alert = root.querySelector(`.${connectionSection.style}-error`);
                 if (alert) {
-                    alert.textContent = localizeDiagnostic(data.modelSettingsFeedback.message, state.locale.text);
+                    alert.textContent = localizeDiagnostic(feedback.message, state.locale.text);
                     alert.hidden = false;
                     alert.focus({preventScroll: true});
                 }
             } else {
-                closeModelSettings(root);
+                closeConnectionSettings(root, state);
             }
         }
     }
@@ -943,14 +1065,16 @@ export default function workspace({parentElement, data, setTriggerValue}) {
             const text = root.querySelector("#research-question");
             text.value = value;
             text.focus();
-        } else if (action === "open_model_settings") {
-            const dialog = modelSettingsDialog(data, state);
+        } else if (action === "open_connection_settings") {
+            state.connectionOpener = control.getAttribute("data-focus");
+            const dialog = connectionSettingsDialog(data, state, value);
             root.append(dialog);
             dialog.showModal();
-        } else if (action === "close_model_settings") {
-            closeModelSettings(root);
-        } else if (action === "reset_model_settings") {
-            root.querySelector("#model-api-key").value = "";
+            dialog.querySelector(value === "data" ? "#sec-project" : "#model-provider").focus({preventScroll: true});
+        } else if (action === "close_connection_settings") {
+            closeConnectionSettings(root, state);
+        } else if (action === "reset_model_settings" || action === "reset_data_source_settings") {
+            clearSensitiveInputs(control.form);
             send(action);
         } else if (action === "sessions") {
             state.sessions = !state.sessions;
@@ -1022,10 +1146,14 @@ export default function workspace({parentElement, data, setTriggerValue}) {
             state.stage = null;
             state.event = null;
             send("clarify", {answers: Object.fromEntries(new FormData(event.target))});
-        } else if (event.target.id === "model-settings-form") {
-            const fields = Object.fromEntries(new FormData(event.target));
-            event.target.elements.api_key.value = "";
-            send("save_model_settings", fields);
+        } else {
+            const form = event.target;
+            const section = Object.values(settingsSections).find(section => section.form === form.id);
+            if (section) {
+                const fields = Object.fromEntries(new FormData(form));
+                clearSensitiveInputs(form);
+                send(section.save, fields);
+            }
         }
     };
 }

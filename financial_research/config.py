@@ -12,6 +12,8 @@ from pydantic import Field, SecretStr, ValidationError, field_validator
 from .domain import Record
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DATA_SOURCE_LABELS = {"sec": "SEC EDGAR", "fred": "FRED", "tavily": "Tavily"}
+CONTACT_EMAIL = re.compile(r"[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+")
 
 
 class Credential(Record):
@@ -97,6 +99,42 @@ class SecSettings(Record):
         if value and ("@" not in value or not value.isascii() or not value.isprintable()):
             raise ValueError("Use an organization name and contact email")
         return value
+
+
+@dataclass(frozen=True)
+class DataSourceOverrides:
+    sec: SecSettings | None = None
+    fred: Credential | None = None
+    tavily: Credential | None = None
+
+    def updated_from_form(self, form: dict) -> "DataSourceOverrides":
+        project, email = (
+            value.strip() if isinstance(value, str) else value
+            for value in (form.get("sec_project", ""), form.get("sec_email", ""))
+        )
+        updates = {}
+        if (project, email) != ("", ""):
+            message = "Enter an English project name and a valid contact email for SEC EDGAR."
+            if not isinstance(project, str) or not project or not isinstance(email, str):
+                raise ValueError(message)
+            if not CONTACT_EMAIL.fullmatch(email):
+                raise ValueError(message)
+            try:
+                updates["sec"] = SecSettings(user_agent=f"{project} <{email}>")
+            except ValidationError:
+                raise ValueError(message) from None
+
+        for provider in ("fred", "tavily"):
+            key = form.get(f"{provider}_api_key", "")
+            if isinstance(key, str) and not key.strip():
+                continue
+            try:
+                updates[provider] = Credential(api_key=key)
+            except ValidationError:
+                raise ValueError(
+                    f"Enter a valid {DATA_SOURCE_LABELS[provider]} API key without spaces."
+                ) from None
+        return replace(self, **updates)
 
 
 @dataclass(frozen=True)
@@ -200,15 +238,39 @@ class Settings:
         )
         return replace(self, model_provider=provider, messages=messages, **{provider: model})
 
+    def data_source_settings_view(self):
+        return {
+            "providers": {
+                "sec": {"configured": bool(self.sec.user_agent)},
+                "fred": {"configured": bool(self.fred.api_key.get_secret_value())},
+                "tavily": {"configured": bool(self.tavily.api_key.get_secret_value())},
+            },
+        }
+
+    def with_data_sources(self, overrides: DataSourceOverrides) -> "Settings":
+        updates = {
+            provider: value
+            for provider in DATA_SOURCE_LABELS
+            if (value := getattr(overrides, provider)) is not None
+        }
+        prefixes = tuple(f"{DATA_SOURCE_LABELS[provider]} " for provider in updates)
+        messages = tuple(message for message in self.messages if not message.startswith(prefixes))
+        return replace(self, messages=messages, **updates)
+
     def redact(self, value):
         if isinstance(value, str):
-            for item in (
+            keys = (
                 self.openrouter.api_key,
                 self.openai_compatible.api_key,
                 self.fred.api_key,
                 self.tavily.api_key,
+            )
+            contact = CONTACT_EMAIL.search(self.sec.user_agent)
+            for secret in (
+                *(item.get_secret_value() for item in keys),
+                self.sec.user_agent,
+                contact[0] if contact else "",
             ):
-                secret = item.get_secret_value()
                 if secret:
                     for variant in {secret, quote(secret, safe=""), quote_plus(secret)}:
                         value = value.replace(variant, "[redacted]")
@@ -244,9 +306,9 @@ def load_config(path: Path) -> Settings:
             "api_key",
             "OPENAI_COMPATIBLE_API_KEY",
         ),
-        ("fred", "FRED", Credential, "api_key", "FRED_API_KEY"),
-        ("tavily", "Tavily", Credential, "api_key", "TAVILY_API_KEY"),
-        ("sec", "SEC EDGAR", SecSettings, "user_agent", "SEC_USER_AGENT"),
+        ("fred", DATA_SOURCE_LABELS["fred"], Credential, "api_key", "FRED_API_KEY"),
+        ("tavily", DATA_SOURCE_LABELS["tavily"], Credential, "api_key", "TAVILY_API_KEY"),
+        ("sec", DATA_SOURCE_LABELS["sec"], SecSettings, "user_agent", "SEC_USER_AGENT"),
     )
     if set(content) - ({"model"} | {item[0] for item in specs}):
         messages.append("Use the provider sections listed in config.example.toml.")

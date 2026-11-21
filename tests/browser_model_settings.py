@@ -1,4 +1,4 @@
-"""Exercise browser model settings through an isolated app and a loopback mock."""
+"""Exercise browser connection settings through an isolated app and a loopback mock."""
 
 import json
 import os
@@ -18,6 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTER_KEY = "browser-test-router-key"
 COMPANY_KEY = "browser-test-company-key"
 FILE_KEY = "browser-test-file-key"
+SEC_PROJECT = "Browser SEC Research Lab"
+SEC_EMAIL = "browser-sec-contact@example.test"
+FRED_KEY = "browser-test-fred-key"
+TAVILY_KEY = "browser-test-tavily-key"
+TEST_SECRETS = (ROUTER_KEY, COMPANY_KEY, FILE_KEY, SEC_EMAIL, FRED_KEY, TAVILY_KEY)
 BASE_CONFIG = f'[openrouter]\napi_key = "{FILE_KEY}"\nmodel = "openai/file-default"\n'
 
 
@@ -31,7 +36,10 @@ class MockModel(BaseHTTPRequestHandler):
         if self.path == "/v1/chat/completions":
             response = {
                 "clarification": {
-                    "message": f"Loopback model received {COMPANY_KEY}.",
+                    "message": (
+                        f"Loopback model received {COMPANY_KEY}. FRED was {FRED_KEY}. "
+                        f"Tavily was {TAVILY_KEY}. SEC contact was {SEC_EMAIL}."
+                    ),
                     "fields": [
                         {
                             "name": "year",
@@ -43,7 +51,9 @@ class MockModel(BaseHTTPRequestHandler):
                 }
             }
         else:
-            response = {"out_of_scope": "New loopback endpoint received the clarification."}
+            response = {
+                "out_of_scope": f"New loopback endpoint received the clarification. FRED was {FRED_KEY}."
+            }
         payload = json.dumps({"choices": [{"message": {"content": json.dumps(response)}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -52,13 +62,52 @@ class MockModel(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def open_settings(page):
-    button = page.get_by_role("button", name="Model settings", exact=True)
+def open_settings(page, label="Connection settings"):
+    button = page.get_by_role("button", name=label, exact=True)
     expect(button).to_be_enabled(timeout=20000)
     button.click()
-    dialog = page.locator("#model-settings-dialog")
+    dialog = page.locator("#connection-settings-dialog")
     expect(dialog).to_be_visible()
     return dialog
+
+
+def open_data_sources(dialog, label="Data source settings"):
+    dialog.get_by_role("tab", name=label, exact=True).click()
+    form = dialog.locator("#data-source-settings-form")
+    expect(form).to_be_visible()
+    return form
+
+
+def expect_data_sources(form, label):
+    expect(form.locator(".data-source-status")).to_have_text([label] * 3)
+
+
+def save_data_sources(page, dialog):
+    page.locator("#provider-setup > summary").click()
+    page.get_by_role("button", name="Configure data sources", exact=True).click()
+    expect(dialog.get_by_role("tab", name="Data source settings")).to_have_attribute("aria-selected", "true")
+    form = dialog.locator("#data-source-settings-form")
+    expect_data_sources(form, "Not configured")
+    expect(form.get_by_role("button", name="Restore defaults")).to_be_disabled()
+    project = form.locator("#sec-project")
+    project.fill(SEC_PROJECT)
+    form.get_by_role("button", name="Save settings").click()
+    expect(dialog.locator(".data-source-settings-error")).to_be_visible()
+    project.fill(SEC_PROJECT)
+    form.locator("#sec-email").fill(SEC_EMAIL)
+    form.locator("#fred-api-key").fill(FRED_KEY)
+    form.locator("#tavily-api-key").fill(TAVILY_KEY)
+    form.get_by_role("button", name="Save settings").click()
+    expect(dialog).not_to_be_visible()
+
+    form = open_data_sources(open_settings(page))
+    expect_data_sources(form, "Configured")
+    for field in ("sec-project", "sec-email", "fred-api-key", "tavily-api-key"):
+        expect(form.locator(f"#{field}")).to_have_value("")
+    for field in ("fred-api-key", "tavily-api-key"):
+        expect(form.locator(f"#{field}")).to_have_attribute("type", "password")
+    page.keyboard.press("Escape")
+    expect(dialog).not_to_be_visible()
 
 
 def check_model_settings(browser, app_url, mock_url, requests):
@@ -67,12 +116,13 @@ def check_model_settings(browser, app_url, mock_url, requests):
     page.on("websocket", lambda ws: ws.on("framereceived", lambda frame: received.append(frame)))
     page.goto(app_url)
     dialog = open_settings(page)
-    provider = dialog.locator("#model-provider")
-    model = dialog.locator("#model-name")
-    key = dialog.locator("#model-api-key")
-    endpoint = dialog.locator("#model-base-url")
-    token_limit = dialog.locator("#model-token-limit-parameter")
-    save = dialog.get_by_role("button", name="Save settings")
+    model_form = dialog.locator("#model-settings-form")
+    provider = model_form.locator("#model-provider")
+    model = model_form.locator("#model-name")
+    key = model_form.locator("#model-api-key")
+    endpoint = model_form.locator("#model-base-url")
+    token_limit = model_form.locator("#model-token-limit-parameter")
+    save = model_form.get_by_role("button", name="Save settings")
 
     expect(provider).to_have_value("openrouter")
     expect(model).to_have_value("openai/file-default")
@@ -100,12 +150,12 @@ def check_model_settings(browser, app_url, mock_url, requests):
     token_limit.select_option("max_tokens")
     save.click()
     expect(dialog).not_to_be_visible()
+    save_data_sources(page, dialog)
     page.locator("#research-mode").select_option("live")
     page.locator("#research-question").fill("Did Microsoft’s profit increase?")
     page.get_by_role("button", name="Run investigation").click()
-    expect(page.get_by_text("Loopback model received [redacted]", exact=False).first).to_be_visible(
-        timeout=20000
-    )
+    redacted = "Loopback model received [redacted]. FRED was [redacted]. Tavily was [redacted]. SEC contact was [redacted]."
+    expect(page.get_by_text(redacted, exact=True).first).to_be_visible(timeout=20000)
     expect(page.get_by_role("heading", name="Clarify the claim")).to_be_visible()
 
     open_settings(page)
@@ -119,9 +169,8 @@ def check_model_settings(browser, app_url, mock_url, requests):
     expect(dialog).not_to_be_visible()
     page.get_by_role("combobox", name="Fiscal year").select_option("2024")
     page.get_by_role("button", name="Resume investigation").click()
-    expect(
-        page.get_by_text("New loopback endpoint received the clarification.", exact=True).first
-    ).to_be_visible(timeout=20000)
+    resumed = "New loopback endpoint received the clarification. FRED was [redacted]."
+    expect(page.get_by_text(resumed, exact=True).first).to_be_visible(timeout=20000)
 
     (first_path, first_auth, first_request), (second_path, second_auth, second_request) = requests
     assert first_path == "/v1/chat/completions"
@@ -139,19 +188,36 @@ def check_model_settings(browser, app_url, mock_url, requests):
     other_dialog = open_settings(other)
     expect(other_dialog.locator("#model-provider")).to_have_value("openrouter")
     expect(other_dialog.locator("#model-name")).to_have_value("openai/file-default")
+    expect_data_sources(open_data_sources(other_dialog), "Not configured")
     other.close()
 
+    data_form = open_data_sources(open_settings(page))
+    data_form.get_by_role("button", name="Restore defaults").click()
+    expect(dialog).not_to_be_visible()
     open_settings(page)
-    dialog.get_by_role("button", name="Restore defaults").click()
+    expect(model).to_have_value("corp-model-two")
+    data_form = open_data_sources(dialog)
+    expect_data_sources(data_form, "Not configured")
+    data_form.locator("#fred-api-key").fill(FRED_KEY)
+    data_form.get_by_role("button", name="Save settings").click()
+    expect(dialog).not_to_be_visible()
+
+    open_settings(page)
+    model_form.get_by_role("button", name="Restore defaults").click()
     expect(dialog).not_to_be_visible()
     open_settings(page)
     expect(model).to_have_value("openai/file-default")
     expect(key).to_have_value("")
-    expect(dialog.get_by_role("button", name="Restore defaults")).to_be_disabled()
+    expect(model_form.get_by_role("button", name="Restore defaults")).to_be_disabled()
+    page.keyboard.press("Escape")
+    page.locator("#interface-language").select_option("zh")
+    data_form = open_data_sources(open_settings(page, "连接设置"), "数据源设置")
+    expect(data_form.locator("section[data-provider=fred] .data-source-status")).to_have_text("已配置")
+    expect(data_form.locator("section[data-provider=sec] .data-source-status")).to_have_text("未配置")
 
     storage = page.evaluate("JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])")
     assert received
-    for secret in (ROUTER_KEY, COMPANY_KEY, FILE_KEY):
+    for secret in (*TEST_SECRETS, SEC_PROJECT):
         assert secret not in storage
         assert all(
             secret.encode() not in (frame.encode() if isinstance(frame, str) else frame) for frame in received
@@ -256,8 +322,8 @@ def main():
         assert config.read_text(encoding="utf-8") == BASE_CONFIG
         for path in [log, *workspace.glob("*.sqlite3*")]:
             contents = path.read_bytes()
-            assert all(secret.encode() not in contents for secret in (ROUTER_KEY, COMPANY_KEY, FILE_KEY))
-    print("Browser model settings passed.")
+            assert all(secret.encode() not in contents for secret in TEST_SECRETS)
+    print("Browser connection settings passed.")
 
 
 if __name__ == "__main__":
